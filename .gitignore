@@ -11,7 +11,7 @@ venv/
 .env/
 
 # Model weights (too large for git)
-models/*.pt
+# models/*.pt
 
 # Data files
 data/train/
