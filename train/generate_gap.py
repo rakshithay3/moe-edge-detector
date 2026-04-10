@@ -1,10 +1,11 @@
 """Generate GAP vectors from the trained backbone for router training.
 
-Reads images from data/train/, extracts 960-d GAP vectors, and maps
+Reads images from data/train/, extracts 576-d GAP vectors, and maps
 each class to an expert group:
     Expert 0 → Display (tv)
     Expert 1 → Kitchen (refrigerator, microwave)
     Expert 2 → Climate (air_conditioner)
+    Expert 3 → Background (none)
 
 Usage:
     python train/generate_gap.py
@@ -45,6 +46,12 @@ for i, (img, label) in enumerate(loader):
         y.append(1)
     elif class_name == "air_conditioner":
         y.append(2)
+    elif class_name == "background":
+        y.append(3)
+    else:
+        print(f"  WARNING: Unknown class '{class_name}', skipping")
+        X.pop()  # remove the GAP vector we just added
+        continue
 
     if (i + 1) % 50 == 0:
         print(f"  Processed {i+1}/{len(dataset)} images...")

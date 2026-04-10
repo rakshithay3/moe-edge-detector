@@ -22,6 +22,7 @@ def extract_all_gap_vectors(data_dir="data/train", weights_path="models/backbone
         0 → Display (tv)
         1 → Kitchen (refrigerator, microwave)
         2 → Climate (air_conditioner)
+        3 → Background (none)
     """
     dataset = datasets.ImageFolder(data_dir, transform=transform)
     loader = DataLoader(dataset, batch_size=1)
@@ -43,6 +44,11 @@ def extract_all_gap_vectors(data_dir="data/train", weights_path="models/backbone
             y.append(1)           # Expert 1: Kitchen
         elif class_name == "air_conditioner":
             y.append(2)           # Expert 2: Climate
+        elif class_name == "background":
+            y.append(3)           # Expert 3: Background
+        else:
+            X.pop()               # remove unmatched GAP vector
+            continue
 
     np.save(output_vectors, np.array(X))
     np.save(output_labels, np.array(y))

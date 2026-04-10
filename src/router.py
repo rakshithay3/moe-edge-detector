@@ -5,13 +5,13 @@ import torch.nn as nn
 
 
 class RouterMLP(nn.Module):
-    """Lightweight MLP that maps 960-d GAP vectors to expert indices.
+    """Lightweight MLP that maps 576-d GAP vectors to expert indices.
 
     Architecture:
-        960 → 256 → ReLU → Dropout → 3 (expert logits)
+        576 → 256 → ReLU → Dropout → 3 (expert logits)
     """
 
-    def __init__(self, input_dim=960, hidden_dim=256, num_experts=3, dropout=0.3):
+    def __init__(self, input_dim=576, hidden_dim=256, num_experts=4, dropout=0.3):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -24,7 +24,7 @@ class RouterMLP(nn.Module):
         """Forward pass.
 
         Args:
-            x: GAP vector [B, 960]
+            x: GAP vector [B, 576]
 
         Returns:
             Expert logits [B, num_experts]
@@ -32,7 +32,7 @@ class RouterMLP(nn.Module):
         return self.net(x)
 
 
-def load_router(weights_path, input_dim=960, hidden_dim=256, num_experts=3):
+def load_router(weights_path, input_dim=576, hidden_dim=256, num_experts=3):
     """Load a trained router from disk."""
     router = RouterMLP(input_dim, hidden_dim, num_experts)
     router.load_state_dict(torch.load(weights_path, map_location="cpu"))
@@ -45,7 +45,7 @@ def predict_expert(router, gap_vector):
 
     Args:
         router: Trained RouterMLP
-        gap_vector: [1, 960] tensor
+        gap_vector: [1, 576] tensor
 
     Returns:
         expert_id (int), confidence (float)

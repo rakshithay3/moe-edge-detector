@@ -16,6 +16,7 @@ EXPERT_NAMES = {
     0: "Display (TV)",
     1: "Kitchen (Refrigerator / Microwave)",
     2: "Climate (Air Conditioner)",
+    3: "Background (None)",
 }
 
 
@@ -25,7 +26,7 @@ def run_inference(image_path,
     """Run the full MoE inference pipeline on a single image.
 
     Pipeline:
-        Image → Preprocess (320×320) → MobileNetV3 backbone → GAP (960-d)
+        Image → Preprocess (320×320) → MobileNetV3 backbone → GAP (576-d)
               → Router MLP → Expert selection → Output
     """
     # 1. Preprocess
@@ -34,8 +35,8 @@ def run_inference(image_path,
 
     # 2. Backbone → GAP
     print("[2/4] Extracting GAP features via MobileNetV3-Small...")
-    backbone = load_backbone(backbone_path)
-    gap = extract_gap(backbone, x)                      # [1, 960]
+    backbone = load_backbone(backbone_path, num_classes=4)
+    gap = extract_gap(backbone, x)                      # [1, 576]
     print(f"       GAP vector shape: {gap.shape}")
 
     # 3. Router → expert selection

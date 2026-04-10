@@ -1,8 +1,8 @@
 """Train the Router MLP on GAP vectors to select the correct expert.
 
-Loads precomputed GAP vectors and expert labels, then trains a
-small MLP (960 → 256 → 3) to classify which expert should handle
-the input.
+Handles class imbalance via:
+  1. Weighted random sampling (balanced batches)
+  2. Class-weighted CrossEntropyLoss
 
 Usage:
     python train/train_router.py
@@ -11,7 +11,7 @@ Usage:
 import torch
 import torch.nn as nn
 import numpy as np
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader, WeightedRandomSampler
 from src.router import RouterMLP
 
 # ── Hyperparameters ──────────────────────────────────────────────
@@ -19,7 +19,7 @@ BATCH_SIZE = 32
 EPOCHS = 30
 LR = 1e-3
 HIDDEN_DIM = 256
-NUM_EXPERTS = 3
+NUM_EXPERTS = 4
 DROPOUT = 0.3
 
 # ── Load precomputed GAP vectors ────────────────────────────────
@@ -28,13 +28,26 @@ y = np.load("data/gap_labels_train.npy")
 
 print(f"GAP vectors: {X.shape}")
 print(f"Labels:      {y.shape}")
-print(f"Expert distribution: {dict(zip(*np.unique(y, return_counts=True)))}")
+
+expert_counts = dict(zip(*np.unique(y, return_counts=True)))
+print(f"Expert distribution: {expert_counts}")
 
 X_tensor = torch.tensor(X, dtype=torch.float32)
 y_tensor = torch.tensor(y, dtype=torch.long)
 
+# ── Balanced sampling ────────────────────────────────────────────
+class_counts = np.bincount(y.astype(int))
+class_weights = 1.0 / class_counts
+sample_weights = class_weights[y.astype(int)]
+
+sampler = WeightedRandomSampler(
+    weights=sample_weights,
+    num_samples=len(y),
+    replacement=True
+)
+
 dataset = TensorDataset(X_tensor, y_tensor)
-loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+loader = DataLoader(dataset, batch_size=BATCH_SIZE, sampler=sampler)
 
 # ── Model ────────────────────────────────────────────────────────
 router = RouterMLP(
@@ -49,7 +62,11 @@ print(f"Device: {device}")
 router.to(device)
 
 optimizer = torch.optim.Adam(router.parameters(), lr=LR)
-criterion = nn.CrossEntropyLoss()
+
+# Weighted loss — inverse frequency
+loss_weights = torch.tensor(1.0 / class_counts, dtype=torch.float32)
+loss_weights = loss_weights / loss_weights.sum()
+criterion = nn.CrossEntropyLoss(weight=loss_weights.to(device))
 
 # ── Training loop ────────────────────────────────────────────────
 best_acc = 0.0
