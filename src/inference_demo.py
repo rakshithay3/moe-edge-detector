@@ -13,10 +13,10 @@ from src.router import load_router, predict_expert
 
 # Expert names for display
 EXPERT_NAMES = {
-    0: "Display (TV)",
-    1: "Kitchen (Refrigerator / Microwave)",
+    0: "Kitchen (Refrigerator / Microwave / Dishwasher)",
+    1: "Display (TV)",
     2: "Climate (Air Conditioner)",
-    3: "Background (None)",
+    3: "Utility (Washer / Robot Vacuum) / Background",
 }
 
 
@@ -51,12 +51,13 @@ def run_inference(image_path,
     # 4. Expert model (placeholder — load and run expert-specific model)
     print("[4/4] Running expert model...")
     expert_weights = {
-        0: "models/expert_0_display.pt",
-        1: "models/expert_1_kitchen.pt",
+        0: "models/expert_0_kitchen.pt",
+        1: "models/expert_1_display.pt",
         2: "models/expert_2_climate.pt",
+        3: "models/expert_3_utility.pt",
     }
 
-    expert_path = expert_weights[expert_id]
+    expert_path = expert_weights.get(expert_id, "N/A")
     print(f"       Would load expert weights from: {expert_path}")
     # TODO: Load and run the expert-specific detection head here
     # expert = load_expert(expert_path)

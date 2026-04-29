@@ -5,7 +5,7 @@ each class to an expert group:
     Expert 0 → kitchen (refrigerator, microwave, dishwasher)
     Expert 1 → display (tv)
     Expert 2 → climate (air_conditioner, air_purifier)
-    Expert 3 → utility (washing_machine, robot_vacuum)
+    Expert 3 → utility (washing_machine, robot_vacuum, background)
 
 Usage:
     python train/generate_gap.py
@@ -21,7 +21,7 @@ EXPERT_GROUPS = {
     "kitchen": ["refrigerator", "microwave", "dishwasher"],
     "display": ["tv"],
     "climate": ["air_conditioner", "air_purifier"],
-    "utility": ["washing_machine", "robot_vacuum"],
+    "utility": ["washing_machine", "robot_vacuum", "background"],
 }
 
 CLASS_TO_EXPERT = {
@@ -37,7 +37,13 @@ transform = transforms.Compose([
 ])
 
 dataset = datasets.ImageFolder("data/train", transform=transform)
-loader = DataLoader(dataset, batch_size=32, num_workers=2, pin_memory=torch.cuda.is_available())
+# Use num_workers=0 for macOS/PyTorch multiprocessing safety in scripts.
+loader = DataLoader(
+    dataset,
+    batch_size=32,
+    num_workers=0,
+    pin_memory=torch.cuda.is_available(),
+)
 
 print(f"Classes: {dataset.classes}")
 print(f"Samples: {len(dataset)}")

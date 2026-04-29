@@ -1,12 +1,12 @@
-"""Live camera appliance detection using the trained MobileNetV3-Small backbone.
+"""Live MoE router detection from webcam frames.
 
 Improvements for robust real-world detection:
   1. Multi-crop inference — center + 4 corners → averaged predictions
   2. Temporal smoothing — exponential moving average over frames
   3. Temperature scaling — sharper softmax for more decisive predictions
 
-Opens the webcam and classifies each frame in real-time, displaying:
-  - Predicted class label
+Opens the webcam and shows:
+  - Selected MoE expert (Kitchen/Display/Climate/Utility)
   - Confidence score
   - FPS counter
 
@@ -28,29 +28,35 @@ from torchvision import transforms
 import numpy as np
 from collections import deque
 
-# ── Config ───────────────────────────────────────────────────────
-MODEL_PATH = "models/backbone.pt"
-CLASSES = ["air_conditioner", "background", "refrigerator", "tv"]
-CONFIDENCE_THRESHOLD = 0.4   # lowered — smoothing raises effective confidence
-TEMPERATURE = 0.5            # <1 = sharper predictions (more confident)
-SMOOTHING_ALPHA = 0.6        # EMA weight: higher = more weight on current frame
-HISTORY_SIZE = 8             # frames for majority-vote stabilization
+# MoE components
+from src.backbone import load_backbone, extract_gap
+from src.router import load_router
 
-# Colors for each class (BGR)
-CLASS_COLORS = {
-    "air_conditioner": (255, 140, 50),   # blue-ish
-    "background":      (100, 100, 100),  # dark gray
-    "refrigerator":    (50, 220, 100),    # green
-    "tv":              (80, 100, 255),    # red-ish
-    "unknown":         (128, 128, 128),   # gray
+# ── Config ───────────────────────────────────────────────────────
+BACKBONE_PATH = "models/backbone.pt"
+ROUTER_PATH = "models/router.pt"
+
+EXPERT_IDS = [0, 1, 2, 3]
+CONFIDENCE_THRESHOLD = 0.7   # below this, treat as "unknown"
+# Match `src/router.predict_expert()` (no temperature scaling) for consistency
+TEMPERATURE = 1.0
+SMOOTHING_ALPHA = 0.3        # less stickiness helps when the scene changes
+HISTORY_SIZE = 4            # fewer frames reduces lag/mis-sticking
+
+# Colors for each expert (BGR)
+EXPERT_COLORS = {
+    0: (50, 220, 100),    # kitchen green
+    1: (80, 100, 255),    # display red-ish
+    2: (255, 140, 50),    # climate blue-ish
+    3: (200, 200, 200),   # utility/background gray
 }
 
-# Pretty display names
-CLASS_DISPLAY = {
-    "air_conditioner": "Air Conditioner",
-    "background":      "Background (None)",
-    "refrigerator":    "Refrigerator",
-    "tv":              "TV / Monitor",
+# Pretty display names for experts
+EXPERT_DISPLAY = {
+    0: "Kitchen (Refrigerator / Microwave / Dishwasher)",
+    1: "Display (TV)",
+    2: "Climate (Air Conditioner / Air Purifier)",
+    3: "Utility (Washer / Robot Vacuum) / Background",
 }
 
 # ── Preprocessing ────────────────────────────────────────────────
@@ -61,20 +67,30 @@ normalize = transforms.Normalize(MEAN, STD)
 
 
 def load_model():
-    """Load the trained MobileNetV3-Small backbone."""
-    model = torchvision.models.mobilenet_v3_small(weights=None)
-    model.classifier[3] = nn.Linear(1024, len(CLASSES))
-    model.load_state_dict(
-        torch.load(MODEL_PATH, map_location="cpu", weights_only=True)
-    )
-    model.eval()
-    return model
+    """Load backbone + router for live MoE expert routing."""
+    backbone = load_backbone(BACKBONE_PATH, num_classes=8)
+    router = load_router(ROUTER_PATH)
+    return backbone, router
+
+
+USE_MULTICROP = True  # webcam objects may be off-center; use robust pooling
+
+
+def preprocess_frame(frame, size=320):
+    """Train-aligned preprocessing: resize full frame to (320,320) once.
+
+    This matches how GAP vectors were generated in `train/generate_gap.py`.
+    """
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    resized = cv2.resize(rgb, (size, size))
+    tensor = torch.from_numpy(resized).permute(2, 0, 1).float() / 255.0  # [3,H,W]
+    tensor = normalize(tensor).unsqueeze(0)  # [1,3,H,W]
+    return tensor
 
 
 def get_crops(frame, crop_size=320):
     """Extract center crop + 4 corner crops from a frame for multi-crop inference.
 
-    This helps because the object could be anywhere in the webcam view.
     Returns a batch tensor [5, 3, crop_size, crop_size].
     """
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -111,25 +127,25 @@ def get_crops(frame, crop_size=320):
     return torch.stack(crops)  # [5, 3, 320, 320]
 
 
-def predict_frame(model, frame, smoothed_probs=None):
-    """Run multi-crop inference with temperature scaling and temporal smoothing.
-
-    Returns:
-        class_name (str): predicted class or 'unknown'
-        confidence (float): smoothed confidence [0, 1]
-        all_probs (dict): class → probability mapping
-        smoothed_probs (np.array): updated EMA probability vector
-    """
-    # Multi-crop inference
-    batch = get_crops(frame)  # [5, 3, 320, 320]
-
+def predict_frame(backbone, router, frame, smoothed_probs=None):
+    """Run multi-crop inference + MoE routing with temporal smoothing."""
     with torch.no_grad():
-        logits = model(batch)  # [5, num_classes]
-        # Temperature scaling — divide logits by T before softmax
-        scaled_logits = logits / TEMPERATURE
-        probs = F.softmax(scaled_logits, dim=1)  # [5, num_classes]
-        # Average across crops
-        avg_probs = probs.mean(dim=0).numpy()  # [num_classes]
+        if USE_MULTICROP:
+            batch = get_crops(frame)  # [5, 3, 320, 320]
+            gap = extract_gap(backbone, batch)   # [5, 576]
+            logits = router(gap)                # [5, 4]
+            # Aggregation: average logits across crops, then softmax once.
+            # This keeps probabilities calibrated (unlike max-over-crops).
+            scaled_logits = logits / TEMPERATURE  # [5, 4]
+            mean_logits = scaled_logits.mean(dim=0)  # [4]
+            avg_probs = F.softmax(mean_logits, dim=0).cpu().numpy()  # [4]
+        else:
+            x = preprocess_frame(frame, size=320)  # [1,3,320,320]
+            gap = extract_gap(backbone, x)          # [1,576]
+            logits = router(gap)                  # [1,4]
+            scaled_logits = logits / TEMPERATURE
+            probs = F.softmax(scaled_logits, dim=1)  # [1,4]
+            avg_probs = probs[0].cpu().numpy()       # [4]
 
     # Temporal smoothing (exponential moving average)
     if smoothed_probs is None:
@@ -137,31 +153,34 @@ def predict_frame(model, frame, smoothed_probs=None):
     else:
         smoothed_probs = SMOOTHING_ALPHA * avg_probs + (1 - SMOOTHING_ALPHA) * smoothed_probs
 
-    pred_idx = smoothed_probs.argmax()
-    confidence = smoothed_probs[pred_idx]
+    pred_expert_id = int(smoothed_probs.argmax())
+    confidence = float(smoothed_probs[pred_expert_id])
 
-    all_probs = {CLASSES[i]: float(smoothed_probs[i]) for i in range(len(CLASSES))}
+    all_probs = {expert_id: float(smoothed_probs[expert_id]) for expert_id in EXPERT_IDS}
 
     if confidence < CONFIDENCE_THRESHOLD:
-        return "unknown", confidence, all_probs, smoothed_probs
+        return "unknown", None, confidence, all_probs, smoothed_probs
 
-    return CLASSES[pred_idx], confidence, all_probs, smoothed_probs
+    return EXPERT_DISPLAY[pred_expert_id], pred_expert_id, confidence, all_probs, smoothed_probs
 
 
-def draw_overlay(frame, class_name, confidence, all_probs, fps, stable_label):
+def draw_overlay(frame, expert_label, expert_id, confidence, all_probs, fps, stable_expert_id):
     """Draw a sleek HUD overlay on the frame."""
     h, w = frame.shape[:2]
 
     # ── Top bar with prediction ──────────────────────────────────
-    display_name = CLASS_DISPLAY.get(stable_label, "Unknown Object")
-    color = CLASS_COLORS.get(stable_label, CLASS_COLORS["unknown"])
+    if stable_expert_id is None:
+        display_name = "Unknown Expert"
+        color = (128, 128, 128)
+    else:
+        display_name = EXPERT_DISPLAY.get(stable_expert_id, "Unknown Expert")
+        color = EXPERT_COLORS.get(stable_expert_id, (128, 128, 128))
 
     # Semi-transparent top banner
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (w, 90), (30, 30, 30), -1)
     cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
 
-    # Class label
     cv2.putText(frame, display_name, (20, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3, cv2.LINE_AA)
 
@@ -185,7 +204,7 @@ def draw_overlay(frame, class_name, confidence, all_probs, fps, stable_label):
     cv2.putText(frame, fps_text, (w - 130, 75),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 200), 2, cv2.LINE_AA)
 
-    # ── Bottom bar with all class probabilities ──────────────────
+    # ── Bottom bar with all expert probabilities ────────────────
     overlay2 = frame.copy()
     cv2.rectangle(overlay2, (0, h - 100), (w, h), (30, 30, 30), -1)
     cv2.addWeighted(overlay2, 0.7, frame, 0.3, 0, frame)
@@ -194,17 +213,18 @@ def draw_overlay(frame, class_name, confidence, all_probs, fps, stable_label):
     x_offset = 20
     y_base = h - 70
 
-    for i, cls in enumerate(CLASSES):
-        prob = all_probs.get(cls, 0.0)
-        cls_color = CLASS_COLORS.get(cls, (128, 128, 128))
-        label = CLASS_DISPLAY.get(cls, cls)
+    for expert_id in EXPERT_IDS:
+        prob = all_probs.get(expert_id, 0.0)
+        cls_color = EXPERT_COLORS.get(expert_id, (128, 128, 128))
+        label = EXPERT_DISPLAY.get(expert_id, str(expert_id))
 
         # Label
-        cv2.putText(frame, f"{label}: {prob:.1%}", (x_offset, y_base - 5),
+        short_label = label.split(" (")[0]
+        cv2.putText(frame, f"{short_label}: {prob:.1%}", (x_offset, y_base - 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
 
         # Probability bar
-        seg_w = bar_total_w // len(CLASSES) - 10
+        seg_w = bar_total_w // len(EXPERT_IDS) - 10
         cv2.rectangle(frame, (x_offset, y_base + 5),
                       (x_offset + seg_w, y_base + 20), (60, 60, 60), -1)
         fill = int(seg_w * prob)
@@ -224,8 +244,8 @@ def draw_overlay(frame, class_name, confidence, all_probs, fps, stable_label):
 
 def main():
     print("Loading model...")
-    model = load_model()
-    print(f"Model loaded. Classes: {CLASSES}")
+    backbone, router = load_model()
+    print("Models loaded. Showing MoE router experts.")
     print(f"Multi-crop: 5 crops | Temperature: {TEMPERATURE} | Smoothing: {SMOOTHING_ALPHA}")
 
     print("Opening camera...")
@@ -251,7 +271,7 @@ def main():
     fps_start = time.time()
     screenshot_count = 0
     smoothed_probs = None
-    label_history = deque(maxlen=HISTORY_SIZE)
+    expert_id_history = deque(maxlen=HISTORY_SIZE)
 
     while True:
         ret, frame = cap.read()
@@ -260,22 +280,24 @@ def main():
             break
 
         # Run inference with smoothing
-        class_name, confidence, all_probs, smoothed_probs = predict_frame(
-            model, frame, smoothed_probs
+        expert_label, expert_id, confidence, all_probs, smoothed_probs = predict_frame(
+            backbone, router, frame, smoothed_probs
         )
 
         # Majority vote stabilization — prevents flickering
-        label_history.append(class_name)
-        if len(label_history) >= 3:
+        if expert_id is not None:
+            expert_id_history.append(expert_id)
+        if len(expert_id_history) >= 3:
             # Use the most common label in recent history
             from collections import Counter
-            vote_counts = Counter(label_history)
-            stable_label = vote_counts.most_common(1)[0][0]
+            vote_counts = Counter(expert_id_history)
+            stable_expert_id = vote_counts.most_common(1)[0][0]
         else:
-            stable_label = class_name
+            # If we don't have enough confident history, don't default to an expert.
+            stable_expert_id = expert_id if expert_id is not None else None
 
         # Use the smoothed confidence for the stable label
-        stable_confidence = all_probs.get(stable_label, confidence)
+        stable_confidence = confidence if stable_expert_id is None else all_probs.get(stable_expert_id, confidence)
 
         # Calculate FPS
         frame_count += 1
@@ -286,8 +308,8 @@ def main():
             fps_start = time.time()
 
         # Draw overlay
-        display = draw_overlay(frame, class_name, stable_confidence,
-                               all_probs, fps, stable_label)
+        display = draw_overlay(frame, expert_label, expert_id, stable_confidence,
+                               all_probs, fps, stable_expert_id)
 
         # Show
         cv2.imshow("MoE Edge Detector - Live", display)

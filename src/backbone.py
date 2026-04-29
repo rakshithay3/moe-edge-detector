@@ -2,7 +2,7 @@ import torch
 import torchvision
 
 
-def load_backbone(weights_path=None, num_classes=4):
+def load_backbone(weights_path=None, num_classes=8):
     """Load MobileNetV3-Small backbone, optionally with custom weights."""
     model = torchvision.models.mobilenet_v3_small(weights="IMAGENET1K_V1")
     # Match the classifier head used during training
