@@ -19,10 +19,10 @@ def extract_all_gap_vectors(data_dir="data/train", weights_path="models/backbone
     """Extract GAP vectors from all training images and save to disk.
 
     Expert group mapping:
-        0 → Display (tv)
-        1 → Kitchen (refrigerator, microwave)
-        2 → Climate (air_conditioner)
-        3 → Background (none)
+        0 → kitchen (refrigerator, microwave, dishwasher)
+        1 → display (tv)
+        2 → climate (air_conditioner, air_purifier)
+        3 → utility (washing_machine, robot_vacuum)
     """
     dataset = datasets.ImageFolder(data_dir, transform=transform)
     loader = DataLoader(dataset, batch_size=1)
@@ -38,14 +38,14 @@ def extract_all_gap_vectors(data_dir="data/train", weights_path="models/backbone
         # Map class to expert group
         class_name = dataset.classes[label.item()]
 
-        if class_name == "tv":
-            y.append(0)           # Expert 0: Display
-        elif class_name in ["refrigerator", "microwave"]:
-            y.append(1)           # Expert 1: Kitchen
-        elif class_name == "air_conditioner":
-            y.append(2)           # Expert 2: Climate
-        elif class_name == "background":
-            y.append(3)           # Expert 3: Background
+        if class_name in ["refrigerator", "microwave", "dishwasher"]:
+            y.append(0)           # Expert 0: kitchen
+        elif class_name == "tv":
+            y.append(1)           # Expert 1: display
+        elif class_name in ["air_conditioner", "air_purifier"]:
+            y.append(2)           # Expert 2: climate
+        elif class_name in ["washing_machine", "robot_vacuum"]:
+            y.append(3)           # Expert 3: utility
         else:
             X.pop()               # remove unmatched GAP vector
             continue

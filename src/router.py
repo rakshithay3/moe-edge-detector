@@ -32,7 +32,7 @@ class RouterMLP(nn.Module):
         return self.net(x)
 
 
-def load_router(weights_path, input_dim=576, hidden_dim=256, num_experts=3):
+def load_router(weights_path, input_dim=576, hidden_dim=256, num_experts=4):
     """Load a trained router from disk."""
     router = RouterMLP(input_dim, hidden_dim, num_experts)
     router.load_state_dict(torch.load(weights_path, map_location="cpu"))
